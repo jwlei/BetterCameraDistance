@@ -184,6 +184,9 @@ else
     config = deepcopy(default_config)
     original_values = deepcopy(default_config)
 end
+local current_x, current_y, current_z = 0, 0, 0
+local last_camera_mode = ""
+local current_camera_position
 
 sdk.hook(sdk.find_type_definition("app.mcCam_OfsDistance"):get_method("getTargetOffset()"),
 function(args)
@@ -194,6 +197,7 @@ function(retval)
         local x = sdk.get_native_field(retval, sdk.find_type_definition("via.vec3"), "x")
         local y = sdk.get_native_field(retval, sdk.find_type_definition("via.vec3"), "y")
         local z = sdk.get_native_field(retval, sdk.find_type_definition("via.vec3"), "z")
+
         local camera_manager = sdk.get_managed_singleton("app.CameraManager")
         local player_camera = camera_manager:get_field("_MasterPlCamera")
         if player_camera == nil then
@@ -203,37 +207,70 @@ function(retval)
         local hunter = sdk.get_managed_singleton("app.PlayerManager"):getMasterPlayer():get_ContextHolder():get_Hunter()
         local is_aim = hunter:get_IsAim()
         local is_combat_boss = hunter_character:get_IsCombatBoss()
-        
-        -- Calculate final values based on mode
-        local final_x, final_y, final_z
-        
+
+        local target_x, target_y, target_z
+
         if is_aim then
-            final_x = config.fixed_mode and config.presets[config.active_preset].camera_distance.x.focus or 
-                     (x + config.presets[config.active_preset].camera_distance.x.focus)
-            final_y = config.fixed_mode and config.presets[config.active_preset].camera_distance.y.focus or 
-                     (y + config.presets[config.active_preset].camera_distance.y.focus)
-            final_z = config.fixed_mode and config.presets[config.active_preset].camera_distance.z.focus or 
-                     (z + config.presets[config.active_preset].camera_distance.z.focus)
+            target_x = config.presets[config.active_preset].camera_distance.x.focus
+            target_y = config.presets[config.active_preset].camera_distance.y.focus
+            target_z = config.presets[config.active_preset].camera_distance.z.focus
+			current_camera_position = "focus"
         elseif is_combat_boss then
-            final_x = config.fixed_mode and config.presets[config.active_preset].camera_distance.x.boss or 
-                     (x + config.presets[config.active_preset].camera_distance.x.boss)
-            final_y = config.fixed_mode and config.presets[config.active_preset].camera_distance.y.boss or 
-                     (y + config.presets[config.active_preset].camera_distance.y.boss)
-            final_z = config.fixed_mode and config.presets[config.active_preset].camera_distance.z.boss or 
-                     (z + config.presets[config.active_preset].camera_distance.z.boss)
+            target_x = config.presets[config.active_preset].camera_distance.x.boss
+            target_y = config.presets[config.active_preset].camera_distance.y.boss
+            target_z = config.presets[config.active_preset].camera_distance.z.boss
+			current_camera_position = "boss"
         else
-            final_x = config.fixed_mode and config.presets[config.active_preset].camera_distance.x.field or 
-                     (x + config.presets[config.active_preset].camera_distance.x.field)
-            final_y = config.fixed_mode and config.presets[config.active_preset].camera_distance.y.field or 
-                     (y + config.presets[config.active_preset].camera_distance.y.field)
-            final_z = config.fixed_mode and config.presets[config.active_preset].camera_distance.z.field or 
-                     (z + config.presets[config.active_preset].camera_distance.z.field)
+            target_x = config.presets[config.active_preset].camera_distance.x.field
+            target_y = config.presets[config.active_preset].camera_distance.y.field
+            target_z = config.presets[config.active_preset].camera_distance.z.field
+			current_camera_position = "field"
+        end
+
+        -- Initialize current position on first run
+        if current_x == 0 and current_y == 0 and current_z == 0 then
+            current_x, current_y, current_z = x, y, z
+        end
+		
+		-- Skip smoothing on first frame or when camera mode changes
+        if last_camera_mode == "" or last_camera_mode ~= current_camera_position then
+            if last_camera_mode == "" then
+                -- First time - go directly to target
+                current_x = target_x
+				current_y = target_y
+				current_z = target_z
+				
+            end
+            -- Otherwise, we'll smooth to the new target
         end
         
-        -- Set the calculated values
-        sdk.set_native_field(retval, sdk.find_type_definition("via.vec3"), "x", final_x)
-        sdk.set_native_field(retval, sdk.find_type_definition("via.vec3"), "y", final_y)
-        sdk.set_native_field(retval, sdk.find_type_definition("via.vec3"), "z", final_z)
+        last_camera_mode = current_camera_position
+
+
+	  -- Apply smoothing - move a percentage of remaining distance each frame
+			if config.smoothing and config.smoothing.enabled then
+				local smoothing_factor = config.smoothing.factor or 0.1
+				if last_camera_mode == "boss" and current_camera_mode == "field" then
+					current_x = current_x + (target_x - current_x) * smoothing_factor/100
+					current_y = current_y + (target_y - current_y) * smoothing_factor/100
+					current_z = current_z + (target_z - current_z) * smoothing_factor/100
+				else 
+					current_x = current_x + (target_x - current_x) * smoothing_factor
+					current_y = current_y + (target_y - current_y) * smoothing_factor
+					current_z = current_z + (target_z - current_z) * smoothing_factor
+				end
+			else
+				-- No smoothing - instant change
+				current_x = target_x
+				current_y = target_y
+				current_z = target_z
+			end
+			
+
+        -- Set the calculated smoothed values
+        sdk.set_native_field(retval, sdk.find_type_definition("via.vec3"), "x", current_x)
+        sdk.set_native_field(retval, sdk.find_type_definition("via.vec3"), "y", current_y)
+        sdk.set_native_field(retval, sdk.find_type_definition("via.vec3"), "z", current_z)
     end
     return retval
 end
@@ -242,7 +279,7 @@ end
 -- Update global variables for the smoothing system
 local current_fov = 0
 local target_fov = 0
-local last_camera_mode = ""
+
 
 -- Update the BeginRendering function for frame-based smoothing
 re.on_pre_application_entry("BeginRendering",
@@ -299,11 +336,17 @@ function()
         end
         
         last_camera_mode = current_camera_mode
+		
+		
         
         -- Apply smoothing - move a percentage of remaining distance each frame
         if config.smoothing and config.smoothing.enabled then
             local smoothing_factor = config.smoothing.factor or 0.1
-            current_fov = current_fov + (target_fov - current_fov) * smoothing_factor
+			if last_camera_mode == "boss" and current_camera_mode == "field" then
+				current_fov = current_fov + (target_fov - current_fov) * smoothing_factor/100
+            else 
+				current_fov = current_fov + (target_fov - current_fov) * smoothing_factor
+			end
         else
             -- No smoothing - instant change
             current_fov = target_fov
@@ -687,6 +730,7 @@ function(retval)
     return retval
 end
 )
+
 
 re.on_frame(function()
     if config.hotkey.enabled then
