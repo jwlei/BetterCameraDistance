@@ -1,41 +1,46 @@
-local GUIID = {
-    [45] = true, -- Pop-up Camp Edit GUI010300
-    [216] = true, -- Pop-up Camps GUI090303,
-    [98] = true -- Binoculars
+local EXCLUDED_AIM = {
+    [1] = true,
+    [2] = true,
+    [11] = true,
+    [12] = true
 }
 
+local DEBUG = false
+
 local default_config = {
-    version = "3.3",
+    version = "3.5",
     enabled = true,
+    enable_camera = true,
+    enable_fov = true,
     fixed_mode = false,
     smoothing = {
         enabled = true,
-        factor = 0.1 -- Higher = faster transition (0.01 to 0.5 range is good)
+        factor = 0.1
     },
     presets = {
         {
             camera_distance = {
-                x = { field = 0.0, boss = 0.0, focus = 0.0 },
-                y = { field = 0.0, boss = 0.0, focus = 0.0 },
-                z = { field = 0.0, boss = 0.0, focus = 0.0 }
+                x = { field = 0.0, boss = 0.0, focus = 0.0, slinger = 0.0 },
+                y = { field = 0.0, boss = 0.0, focus = 0.0, slinger = 0.0 },
+                z = { field = 0.0, boss = 0.0, focus = 0.0, slinger = 0.0 }
             },
-            fov = { field = 0.0, boss = 0.0, focus = 0.0 }
+            fov = { field = 0.0, boss = 0.0, focus = 0.0, slinger = 0.0 }
         },
         {
             camera_distance = {
-                x = { field = 0.0, boss = 0.0, focus = 0.0 },
-                y = { field = 0.0, boss = 0.0, focus = 0.0 },
-                z = { field = 0.0, boss = 0.0, focus = 0.0 }
+                x = { field = 0.0, boss = 0.0, focus = 0.0, slinger = 0.0 },
+                y = { field = 0.0, boss = 0.0, focus = 0.0, slinger = 0.0 },
+                z = { field = 0.0, boss = 0.0, focus = 0.0, slinger = 0.0 }
             },
-            fov = { field = 0.0, boss = 0.0, focus = 0.0 }
+            fov = { field = 0.0, boss = 0.0, focus = 0.0, slinger = 0.0 }
         },
         {
             camera_distance = {
-                x = { field = 0.0, boss = 0.0, focus = 0.0 },
-                y = { field = 0.0, boss = 0.0, focus = 0.0 },
-                z = { field = 0.0, boss = 0.0, focus = 0.0 }
+                x = { field = 0.0, boss = 0.0, focus = 0.0, slinger = 0.0 },
+                y = { field = 0.0, boss = 0.0, focus = 0.0, slinger = 0.0 },
+                z = { field = 0.0, boss = 0.0, focus = 0.0, slinger = 0.0 }
             },
-            fov = { field = 0.0, boss = 0.0, focus = 0.0 }
+            fov = { field = 0.0, boss = 0.0, focus = 0.0, slinger = 0.0 }
         }
     },
     active_preset = 1,
@@ -54,6 +59,7 @@ local config = nil
 local original_values = nil
 local ignore_fov = false
 local is_binding_key = false
+local primary_camera = nil
 
 local key_names = {
     [0x41] = "A", [0x42] = "B", [0x43] = "C", [0x44] = "D", [0x45] = "E",
@@ -70,6 +76,12 @@ local key_names = {
     [0x22] = "Page Down", [0x25] = "Left", [0x26] = "Up", [0x27] = "Right", [0x28] = "Down"
 }
 
+function log_debug(msg)
+    if DEBUG then
+        log.debug(msg)
+    end
+end
+
 function deepcopy(orig)
     local orig_type = type(orig)
     local copy
@@ -85,92 +97,35 @@ function deepcopy(orig)
     return copy
 end
 
-local easing_functions = {
-    -- No easing (instant change)
-    function(t)
-        return 1.0
-    end,
+function upgrade_config(defaults, config)
+    local changed = false
     
-    -- Linear easing
-    function(t)
-        return t
-    end,
-    
-    -- Sine easing (ease in-out)
-    function(t)
-        return 0.5 * (1 - math.cos(t * math.pi))
-    end,
-    
-    -- Quad easing (ease in-out)
-    function(t)
-        if t < 0.5 then
-            return 2 * t * t
-        else
-            return 1 - (-2 * t + 2) * (-2 * t + 2) / 2
+    for key, default_value in pairs(defaults) do
+        if config[key] == nil then
+            config[key] = deepcopy(default_value)
+            changed = true
+        elseif type(default_value) == 'table' then
+            if type(config[key]) == 'table' then
+                changed = upgrade_config(default_value, config[key]) or changed
+            else
+                config[key] = deepcopy(default_value)
+                changed = true
+            end
         end
-    end,
-    
-    -- Cubic easing (ease in-out)
-    function(t)
-        if t < 0.5 then
-            return 4 * t * t * t
-        else
-            return 1 - (-2 * t + 2) * (-2 * t + 2) * (-2 * t + 2) / 2
-        end
-    end,
-    
-    -- Exponential easing (ease in-out)
-    function(t)
-        if t == 0 then
-            return 0
-        elseif t == 1 then
-            return 1
-        elseif t < 0.5 then
-            return (2 ^ (20 * t - 10)) / 2
-        else
-            return (2 - (2 ^ (-20 * t + 10))) / 2
-        end
-    end,
-}
-
-local easing_names = {"Instant", "Linear", "Sine", "Quad", "Cubic", "Exponential"}
-
-local function applyEasing(t)
-    -- Use easing type 1 (array index 2) as default if config value is invalid
-    local easing_index = (config.easing and config.easing.type) or 2
-    -- Clamp to valid range (1-6)
-    easing_index = math.max(1, math.min(#easing_functions, easing_index))
-    
-    -- For "Instant" easing (index 1), just return 1 to complete transition immediately
-    if easing_index == 1 then
-        return 1.0
     end
     
-    -- Otherwise apply the selected easing function
-    return easing_functions[easing_index](t)
-end
-
-local function getTransitionDuration()
-    return (config.easing and config.easing.duration) or 0.3
+    return changed
 end
 
 if json ~= nil then
     local file = json.load_file(configPath)
     if file ~= nil then
-        if file.version < "3.0" then
-            config = deepcopy(default_config)
-            json.dump_file(configPath, config)
-        elseif file.version ~= default_config.version then
+        if file.version ~= default_config.version then
             config = file
-            
-            for key, value in pairs(default_config) do
-                if config[key] == nil then
-                    config[key] = deepcopy(value)
-                end
+            if upgrade_config(default_config, config) then
+                config.version = default_config.version
+                json.dump_file(configPath, config)
             end
-            
-            config.version = default_config.version
-            json.dump_file(configPath, config)
         else
             config = file
         end
@@ -184,7 +139,8 @@ else
     config = deepcopy(default_config)
     original_values = deepcopy(default_config)
 end
-local current_x, current_y, current_z = 0, 0, 0
+
+local current_x, current_y, current_z = nil, nil, nil
 local last_camera_mode = ""
 local current_camera_position
 
@@ -193,7 +149,7 @@ function(args)
     return sdk.PreHookResult.CALL_ORIGINAL
 end,
 function(retval)
-    if config.enabled then
+    if config.enabled and config.enable_camera then
         local x = sdk.get_native_field(retval, sdk.find_type_definition("via.vec3"), "x")
         local y = sdk.get_native_field(retval, sdk.find_type_definition("via.vec3"), "y")
         local z = sdk.get_native_field(retval, sdk.find_type_definition("via.vec3"), "z")
@@ -206,11 +162,17 @@ function(retval)
         local hunter_character = player_camera:get_field("_OwnerCharacter")
         local hunter = sdk.get_managed_singleton("app.PlayerManager"):getMasterPlayer():get_ContextHolder():get_Hunter()
         local is_aim = hunter:get_IsAim()
+        local aim_type = hunter:get_AimType()
         local is_combat_boss = hunter_character:get_IsCombatBoss()
 
         local target_x, target_y, target_z
-
-        if is_aim then
+        
+        if is_aim and EXCLUDED_AIM[aim_type] then
+            target_x = config.presets[config.active_preset].camera_distance.x.slinger
+            target_y = config.presets[config.active_preset].camera_distance.y.slinger
+            target_z = config.presets[config.active_preset].camera_distance.z.slinger
+			current_camera_position = "slinger"
+        elseif is_aim then
             target_x = config.presets[config.active_preset].camera_distance.x.focus
             target_y = config.presets[config.active_preset].camera_distance.y.focus
             target_z = config.presets[config.active_preset].camera_distance.z.focus
@@ -227,47 +189,35 @@ function(retval)
 			current_camera_position = "field"
         end
 
-        -- Initialize current position on first run
-        if current_x == 0 and current_y == 0 and current_z == 0 then
+        if current_x == nil and current_y == nil and current_z == nil then
             current_x, current_y, current_z = x, y, z
         end
-		
-		-- Skip smoothing on first frame or when camera mode changes
-        if last_camera_mode == "" or last_camera_mode ~= current_camera_position then
-            if last_camera_mode == "" then
-                -- First time - go directly to target
-                current_x = target_x
-				current_y = target_y
-				current_z = target_z
-				
-            end
-            -- Otherwise, we'll smooth to the new target
-        end
+
+        if last_camera_mode == "" then
+            current_x = target_x
+            current_y = target_y
+            current_z = target_z
+        end         
         
         last_camera_mode = current_camera_position
 
-
-	  -- Apply smoothing - move a percentage of remaining distance each frame
-			if config.smoothing and config.smoothing.enabled then
-				local smoothing_factor = config.smoothing.factor or 0.1
-				if last_camera_mode == "boss" and current_camera_mode == "field" then
-					current_x = current_x + (target_x - current_x) * smoothing_factor/100
-					current_y = current_y + (target_y - current_y) * smoothing_factor/100
-					current_z = current_z + (target_z - current_z) * smoothing_factor/100
-				else 
-					current_x = current_x + (target_x - current_x) * smoothing_factor
-					current_y = current_y + (target_y - current_y) * smoothing_factor
-					current_z = current_z + (target_z - current_z) * smoothing_factor
-				end
-			else
-				-- No smoothing - instant change
-				current_x = target_x
-				current_y = target_y
-				current_z = target_z
-			end
+        if config.smoothing and config.smoothing.enabled then
+            local smoothing_factor = config.smoothing.factor or 0.1
+            if last_camera_mode == "boss" and current_camera_mode == "field" then
+                current_x = current_x + (target_x - current_x) * smoothing_factor/100
+                current_y = current_y + (target_y - current_y) * smoothing_factor/100
+                current_z = current_z + (target_z - current_z) * smoothing_factor/100
+            else 
+                current_x = current_x + (target_x - current_x) * smoothing_factor
+                current_y = current_y + (target_y - current_y) * smoothing_factor
+                current_z = current_z + (target_z - current_z) * smoothing_factor
+            end
+        else
+            current_x = target_x
+            current_y = target_y
+            current_z = target_z
+        end
 			
-
-        -- Set the calculated smoothed values
         sdk.set_native_field(retval, sdk.find_type_definition("via.vec3"), "x", current_x)
         sdk.set_native_field(retval, sdk.find_type_definition("via.vec3"), "y", current_y)
         sdk.set_native_field(retval, sdk.find_type_definition("via.vec3"), "z", current_z)
@@ -276,85 +226,83 @@ function(retval)
 end
 )
 
--- Update global variables for the smoothing system
-local current_fov = 0
-local target_fov = 0
+local current_fov = nil
 
-
--- Update the BeginRendering function for frame-based smoothing
-re.on_pre_application_entry("BeginRendering",
-function()
-    if config.enabled then
+sdk.hook(sdk.find_type_definition("ace.cCameraParam"):get_method("applyToCameraController(ace.CameraControllerBase)"),
+function (args)
+    if config.enabled and config.enable_fov then
         local camera_manager = sdk.get_managed_singleton("app.CameraManager")
         local player_camera = camera_manager:get_field("_MasterPlCamera")
-        
         if player_camera == nil then
-            return
+            return sdk.PreHookResult.CALL_ORIGINAL
         end
+        local camera = sdk.to_managed_object(args[3])
+        if camera ~= player_camera then
+            current_fov = nil
+            return sdk.PreHookResult.CALL_ORIGINAL
+        end
+        local param = sdk.to_managed_object(args[2])
         local hunter_character = player_camera:get_field("_OwnerCharacter")
         local hunter = sdk.get_managed_singleton("app.PlayerManager"):getMasterPlayer():get_ContextHolder():get_Hunter()
-        local is_in_tent = hunter_character:get_IsInTent()
-        if is_in_tent or ignore_fov then
-            return 
-        end
-        local is_aim = hunter:get_IsAim()
-        local is_combat_boss = hunter_character:get_IsCombatBoss()
-        
-        local primary_camera = sdk.get_primary_camera()
-        local base_fov = primary_camera:get_FOV()
-        
-        -- Calculate final FOV value based on mode
-        local target_fov
-        local current_camera_mode
-        
-        if is_aim then
-            target_fov = config.fixed_mode and config.presets[config.active_preset].fov.focus or 
-                       (base_fov + config.presets[config.active_preset].fov.focus)
-            current_camera_mode = "focus"
-        elseif is_combat_boss then
-            target_fov = config.fixed_mode and config.presets[config.active_preset].fov.boss or 
-                       (base_fov + config.presets[config.active_preset].fov.boss)
-            current_camera_mode = "boss"
-        else
-            target_fov = config.fixed_mode and config.presets[config.active_preset].fov.field or 
-                       (base_fov + config.presets[config.active_preset].fov.field)
-            current_camera_mode = "field"
-        end
-        
-        -- Initialize current_fov on first run
-        if current_fov == 0 then
+
+        local base_fov = param.FOV
+
+        if current_fov == nil then
             current_fov = base_fov
         end
-        
-        -- Skip smoothing on first frame or when camera mode changes
-        if last_camera_mode == "" or last_camera_mode ~= current_camera_mode then
-            if last_camera_mode == "" then
-                -- First time - go directly to target
-                current_fov = target_fov
+
+        local target_fov
+        local current_camera_mode
+
+        if ignore_fov then
+            target_fov = base_fov
+            current_camera_mode = "default"
+        else
+            local is_aim = hunter:get_IsAim()
+            local aim_type = hunter:get_AimType()
+            local is_combat_boss = hunter_character:get_IsCombatBoss()
+
+            if is_aim and EXCLUDED_AIM[aim_type] then
+                target_fov = config.fixed_mode and config.presets[config.active_preset].fov.slinger or 
+                           (base_fov + config.presets[config.active_preset].fov.slinger)
+                current_camera_mode = "slinger"
+            elseif is_aim then
+                target_fov = config.fixed_mode and config.presets[config.active_preset].fov.focus or 
+                           (base_fov + config.presets[config.active_preset].fov.focus)
+                current_camera_mode = "focus"
+            elseif is_combat_boss then
+                target_fov = config.fixed_mode and config.presets[config.active_preset].fov.boss or 
+                           (base_fov + config.presets[config.active_preset].fov.boss)
+                current_camera_mode = "boss"
+            else
+                target_fov = config.fixed_mode and config.presets[config.active_preset].fov.field or 
+                           (base_fov + config.presets[config.active_preset].fov.field)
+                current_camera_mode = "field"
             end
-            -- Otherwise, we'll smooth to the new target
         end
         
-        last_camera_mode = current_camera_mode
-		
-		
-        
-        -- Apply smoothing - move a percentage of remaining distance each frame
-        if config.smoothing and config.smoothing.enabled then
-            local smoothing_factor = config.smoothing.factor or 0.1
-			if last_camera_mode == "boss" and current_camera_mode == "field" then
-				current_fov = current_fov + (target_fov - current_fov) * smoothing_factor/100
-            else 
-				current_fov = current_fov + (target_fov - current_fov) * smoothing_factor
-			end
-        else
-            -- No smoothing - instant change
+        if last_camera_mode == "" then
             current_fov = target_fov
         end
         
-        -- Apply the current FOV
-        primary_camera:set_FOV(current_fov)
+        last_camera_mode = current_camera_mode
+        
+        if config.smoothing and config.smoothing.enabled then
+            local smoothing_factor = config.smoothing.factor or 0.1
+            if last_camera_mode == "boss" and current_camera_mode == "field" then
+                current_fov = current_fov + (target_fov - current_fov) * smoothing_factor/100
+            else 
+                current_fov = current_fov + (target_fov - current_fov) * smoothing_factor
+            end
+        else
+            current_fov = target_fov
+        end
+        param.FOV = current_fov  
     end
+    return sdk.PreHookResult.CALL_ORIGINAL
+end,
+function (retval)
+    return retval
 end)
 
 re.on_draw_ui(function()
@@ -365,6 +313,16 @@ re.on_draw_ui(function()
         end
 
         if config.enabled then
+            changed, value = imgui.checkbox("Enable Camera Distance", config.enable_camera)
+            if changed then
+                config.enable_camera = value
+            end
+
+            changed, value = imgui.checkbox("Enable FOV Control", config.enable_fov)
+            if changed then
+                config.enable_fov = value
+            end
+
             changed, value = imgui.checkbox("Fixed Camera Mode", config.fixed_mode)
             if imgui.is_item_hovered() then
                 imgui.set_tooltip("If enabled, the values will replace the original camera settings. If disabled, the values will be added to the original camera settings.")
@@ -443,6 +401,21 @@ re.on_draw_ui(function()
                     config.presets[config.active_preset].camera_distance.x.focus = default_config.presets[config.active_preset].camera_distance.x.focus
                 end
                 imgui.end_group()
+
+                imgui.text("Slinger")
+                imgui.begin_group()
+                changed, config.presets[config.active_preset].camera_distance.x.slinger = imgui.slider_float("X Value##slinger_x", config.presets[config.active_preset].camera_distance.x.slinger, -40, 40)
+                imgui.end_group()
+                
+                imgui.begin_group()
+                if imgui.button("Reset##slinger_x") then
+                    config.presets[config.active_preset].camera_distance.x.slinger = original_values.presets[config.active_preset].camera_distance.x.slinger
+                end
+                imgui.same_line()
+                if imgui.button("Default##slinger_x") then
+                    config.presets[config.active_preset].camera_distance.x.slinger = default_config.presets[config.active_preset].camera_distance.x.slinger
+                end
+                imgui.end_group()
                 
                 imgui.tree_pop()
             end
@@ -490,6 +463,21 @@ re.on_draw_ui(function()
                 imgui.same_line()
                 if imgui.button("Default##focus_y") then
                     config.presets[config.active_preset].camera_distance.y.focus = default_config.presets[config.active_preset].camera_distance.y.focus
+                end
+                imgui.end_group()
+
+                imgui.text("Slinger")
+                imgui.begin_group()
+                changed, config.presets[config.active_preset].camera_distance.y.slinger = imgui.slider_float("Y Value##slinger_y", config.presets[config.active_preset].camera_distance.y.slinger, -40, 40)
+                imgui.end_group()
+                
+                imgui.begin_group()
+                if imgui.button("Reset##slinger_y") then
+                    config.presets[config.active_preset].camera_distance.y.slinger = original_values.presets[config.active_preset].camera_distance.y.slinger
+                end
+                imgui.same_line()
+                if imgui.button("Default##slinger_y") then
+                    config.presets[config.active_preset].camera_distance.y.slinger = default_config.presets[config.active_preset].camera_distance.y.slinger
                 end
                 imgui.end_group()
                 
@@ -541,6 +529,21 @@ re.on_draw_ui(function()
                     config.presets[config.active_preset].camera_distance.z.focus = default_config.presets[config.active_preset].camera_distance.z.focus
                 end
                 imgui.end_group()
+
+                imgui.text("Slinger")
+                imgui.begin_group()
+                changed, config.presets[config.active_preset].camera_distance.z.slinger = imgui.slider_float("Z Value##slinger_z", config.presets[config.active_preset].camera_distance.z.slinger, -40, 40)
+                imgui.end_group()
+                
+                imgui.begin_group()
+                if imgui.button("Reset##slinger_z") then
+                    config.presets[config.active_preset].camera_distance.z.slinger = original_values.presets[config.active_preset].camera_distance.z.slinger
+                end
+                imgui.same_line()
+                if imgui.button("Default##slinger_z") then
+                    config.presets[config.active_preset].camera_distance.z.slinger = default_config.presets[config.active_preset].camera_distance.z.slinger
+                end
+                imgui.end_group()
                 
                 imgui.tree_pop()
             end
@@ -588,6 +591,21 @@ re.on_draw_ui(function()
                 imgui.same_line()
                 if imgui.button("Default##focus_fov") then
                     config.presets[config.active_preset].fov.focus = default_config.presets[config.active_preset].fov.focus
+                end
+                imgui.end_group()
+
+                imgui.text("Slinger")
+                imgui.begin_group()
+                changed, config.presets[config.active_preset].fov.slinger = imgui.slider_float("FOV Value##slinger_fov", config.presets[config.active_preset].fov.slinger, -40, 150)
+                imgui.end_group()
+                
+                imgui.begin_group()
+                if imgui.button("Reset##slinger_fov") then
+                    config.presets[config.active_preset].fov.slinger = original_values.presets[config.active_preset].fov.slinger
+                end
+                imgui.same_line()
+                if imgui.button("Default##slinger_fov") then
+                    config.presets[config.active_preset].fov.slinger = default_config.presets[config.active_preset].fov.slinger
                 end
                 imgui.end_group()
                 
@@ -682,56 +700,6 @@ function(retval)
 end
 )
 
-sdk.hook(sdk.find_type_definition("ace.GUIBase`2<app.GUIID.ID,app.GUIFunc.TYPE>"):get_method("toOpen()"),
-function(args)
-    local gui_base = sdk.to_managed_object(args[2])
-    local id = gui_base:get_IDInt()
-    if GUIID[id] then
-        ignore_fov = true
-    end
-
-    return sdk.PreHookResult.CALL_ORIGINAL
-end,
-function(retval)
-    return retval
-end
-)
-
-sdk.hook(sdk.find_type_definition("ace.GUIBase`2<app.GUIID.ID,app.GUIFunc.TYPE>"):get_method("toClose()"),
-function(args)
-    local gui_base = sdk.to_managed_object(args[2])
-    local id = gui_base:get_IDInt()
-    if GUIID[id] then
-        ignore_fov = false
-    end
-    return sdk.PreHookResult.CALL_ORIGINAL
-end,
-function(retval)
-    return retval
-end
-)
-
-sdk.hook(sdk.find_type_definition("app.HunterDoll"):get_method("doAwake()"),
-function(args)
-    ignore_fov = true
-    return sdk.PreHookResult.CALL_ORIGINAL
-end,
-function(retval)
-    return retval
-end
-)
-
-sdk.hook(sdk.find_type_definition("app.HunterDoll"):get_method("doOnDestroy()"),
-function(args)
-    ignore_fov = false
-    return sdk.PreHookResult.CALL_ORIGINAL
-end,
-function(retval)
-    return retval
-end
-)
-
-
 re.on_frame(function()
     if config.hotkey.enabled then
         local key = reframework:is_key_down(config.hotkey.key)
@@ -744,26 +712,3 @@ re.on_frame(function()
         last_key = key
     end
 end)
-
-sdk.hook(sdk.find_type_definition("app.mcCam_OfsPitch"):get_method("setParam(System.Single, via.curve.EaseType, app.user_data.CameraAttachParam.cPitchOfsParam.cControlVec3, app.user_data.CameraAttachParam.cPitchOfsParam.cControlFloat, app.user_data.CameraAttachParam.cPitchOfsParam.cControlFloat)"),
-function(args)
-    local ofs_pitch = sdk.to_managed_object(args[2])
-    local offset = sdk.to_float(args[3])
-    local control_vec3 = sdk.to_managed_object(args[5])
-    local lookup_value = control_vec3:get_field("_LookUp_Value")
-    local lookdown_value = control_vec3:get_field("_LookDown_Value")
-    local lookup_x = sdk.get_native_field(lookup_value, sdk.find_type_definition("via.vec3"), "x")
-    local lookdown_x = sdk.get_native_field(lookdown_value, sdk.find_type_definition("via.vec3"), "x")
-    local lookup_y = sdk.get_native_field(lookup_value, sdk.find_type_definition("via.vec3"), "y")
-    local lookdown_y = sdk.get_native_field(lookup_value, sdk.find_type_definition("via.vec3"), "y")
-    local lookup_z = sdk.get_native_field(lookup_value, sdk.find_type_definition("via.vec3"), "z")
-    local lookdown_z = sdk.get_native_field(lookup_value, sdk.find_type_definition("via.vec3"), "z")
-    sdk.set_native_field(lookup_value, sdk.find_type_definition("via.vec3"), "z", lookup_x + offset)
-    log.debug("lookup x: " .. lookup_x .. " y: " .. lookup_y .. " z: " .. lookup_z)
-    log.debug("lookdown x: " .. lookdown_x .. " y: " .. lookdown_y .. " z: " .. lookdown_z)
-    return sdk.PreHookResult.CALL_ORIGINAL
-end,
-function(retval)
-    return retval
-end
-)
