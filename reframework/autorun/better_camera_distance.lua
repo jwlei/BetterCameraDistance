@@ -8,7 +8,7 @@ local EXCLUDED_AIM = {
 local DEBUG = false
 
 local default_config = {
-    version = "3.5",
+    version = "3.6",
     enabled = true,
     enable_camera = true,
     enable_fov = true,
@@ -24,7 +24,8 @@ local default_config = {
                 y = { field = 0.0, boss = 0.0, focus = 0.0, slinger = 0.0 },
                 z = { field = 0.0, boss = 0.0, focus = 0.0, slinger = 0.0 }
             },
-            fov = { field = 0.0, boss = 0.0, focus = 0.0, slinger = 0.0 }
+            fov = { field = 0.0, boss = 0.0, focus = 0.0, slinger = 0.0 },
+            dof_strength = 2.0,
         },
         {
             camera_distance = {
@@ -32,7 +33,8 @@ local default_config = {
                 y = { field = 0.0, boss = 0.0, focus = 0.0, slinger = 0.0 },
                 z = { field = 0.0, boss = 0.0, focus = 0.0, slinger = 0.0 }
             },
-            fov = { field = 0.0, boss = 0.0, focus = 0.0, slinger = 0.0 }
+            fov = { field = 0.0, boss = 0.0, focus = 0.0, slinger = 0.0 },
+            dof_strength = 2.0,
         },
         {
             camera_distance = {
@@ -40,7 +42,8 @@ local default_config = {
                 y = { field = 0.0, boss = 0.0, focus = 0.0, slinger = 0.0 },
                 z = { field = 0.0, boss = 0.0, focus = 0.0, slinger = 0.0 }
             },
-            fov = { field = 0.0, boss = 0.0, focus = 0.0, slinger = 0.0 }
+            fov = { field = 0.0, boss = 0.0, focus = 0.0, slinger = 0.0 },
+            dof_strength = 2.0,
         }
     },
     active_preset = 1,
@@ -140,6 +143,39 @@ else
     original_values = deepcopy(default_config)
 end
 
+local HunterCharacter = nil
+
+function getPlayerCharacter()
+    -- Get player character.
+    --sdk.get_managed_singleton("app.PlayerManager"):getMasterPlayer():get_Character()
+
+    if HunterCharacter and HunterCharacter:get_address() ~= 0 then
+        return HunterCharacter
+    end
+    local playerManager = sdk.get_managed_singleton("app.PlayerManager")
+    if not playerManager then
+        return nil
+    end
+
+    local cPlayerManageInfo = playerManager:getMasterPlayer() --app.cPlayerManageInfo.getMasterPlayer()
+    if not cPlayerManageInfo then
+        return nil
+    end
+
+    HunterCharacter = cPlayerManageInfo:get_Character() --app.HunterCharacter.get_Character()
+    return HunterCharacter
+end
+
+local weaponUnsheate = false
+
+local function getIsWeapon()
+    
+    local myHunter = getPlayerCharacter()
+    weaponUnsheate = myHunter:get_IsWeaponOn()
+    return weaponUnsheate
+end
+
+
 local current_x, current_y, current_z = nil, nil, nil
 local last_camera_mode = ""
 local current_camera_position
@@ -164,6 +200,8 @@ function(retval)
         local is_aim = hunter:get_IsAim()
         local aim_type = hunter:get_AimType()
         local is_combat_boss = hunter_character:get_IsCombatBoss()
+        
+
 
         local target_x, target_y, target_z
         
@@ -203,11 +241,13 @@ function(retval)
 
         if config.smoothing and config.smoothing.enabled then
             local smoothing_factor = config.smoothing.factor or 0.1
-            if last_camera_mode == "boss" and current_camera_mode == "field" then
+            if last_camera_mode == "boss" and current_camera_mode == "field" and getIsWeapon() == true then
+                return    
+            elseif last_camera_mode == "field" and current_camera_position == "boss" and getIsWeapon() == false then
                 current_x = current_x + (target_x - current_x) * smoothing_factor/100
                 current_y = current_y + (target_y - current_y) * smoothing_factor/100
                 current_z = current_z + (target_z - current_z) * smoothing_factor/100
-            else 
+            else
                 current_x = current_x + (target_x - current_x) * smoothing_factor
                 current_y = current_y + (target_y - current_y) * smoothing_factor
                 current_z = current_z + (target_z - current_z) * smoothing_factor
@@ -218,6 +258,7 @@ function(retval)
             current_z = target_z
         end
 			
+        
         sdk.set_native_field(retval, sdk.find_type_definition("via.vec3"), "x", current_x)
         sdk.set_native_field(retval, sdk.find_type_definition("via.vec3"), "y", current_y)
         sdk.set_native_field(retval, sdk.find_type_definition("via.vec3"), "z", current_z)
@@ -298,6 +339,26 @@ function (args)
             current_fov = target_fov
         end
         param.FOV = current_fov  
+    end
+    return sdk.PreHookResult.CALL_ORIGINAL
+end,
+function (retval)
+    return retval
+end)
+
+sdk.hook(sdk.find_type_definition("ace.PostEffect.cDOFCircularController"):get_method("applyToComponent(ace.PostEffect.cDOFCircularParam)"),
+function (args)
+    local param = sdk.to_managed_object(args[3])
+    local camera_manager = sdk.get_managed_singleton("app.CameraManager")
+    local player_camera = camera_manager:get_field("_MasterPlCamera")
+    if player_camera == nil then
+        return sdk.PreHookResult.CALL_ORIGINAL
+    end
+    local hunter_character = player_camera:get_field("_OwnerCharacter")
+    local hunter = sdk.get_managed_singleton("app.PlayerManager"):getMasterPlayer():get_ContextHolder():get_Hunter()
+    local is_aim = hunter:get_IsAim()
+    if is_aim and param._FarBokehScale > config.presets[config.active_preset].dof_strength then
+        param._FarBokehScale = config.presets[config.active_preset].dof_strength
     end
     return sdk.PreHookResult.CALL_ORIGINAL
 end,
@@ -640,6 +701,25 @@ re.on_draw_ui(function()
                 
                 imgui.tree_pop()
             end
+
+            if imgui.tree_node("DOF Strength") then
+                changed, config.presets[config.active_preset].dof_strength = imgui.slider_float("DOF Strength", config.presets[config.active_preset].dof_strength, 0.0, 2.0)
+                if imgui.is_item_hovered() then
+                    imgui.set_tooltip("Set the strength of the depth of field effect in focus mode")
+                end
+                
+                imgui.begin_group()
+                if imgui.button("Reset##dof_strength") then
+                    config.presets[config.active_preset].dof_strength = original_values.presets[config.active_preset].dof_strength
+                end
+                imgui.same_line()
+                if imgui.button("Default##dof_strength") then
+                    config.presets[config.active_preset].dof_strength = default_config.presets[config.active_preset].dof_strength
+                end
+                imgui.end_group()
+                
+                imgui.tree_pop()
+            end
         end
         
         imgui.begin_group()
@@ -707,7 +787,7 @@ re.on_frame(function()
         local alt = reframework:is_key_down(0x12) or not config.hotkey.alt
         local shift = reframework:is_key_down(0x10) or not config.hotkey.shift
         if reframework:is_key_down(config.hotkey.key) and ctrl and shift and alt and not last_key then
-            config.active_preset = (config.active_preset + 1) % 4
+            config.active_preset = config.active_preset % 3 + 1
         end
         last_key = key
     end
